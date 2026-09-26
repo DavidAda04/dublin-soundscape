@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Dublin Soundscape</title>
+
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        max-width: 500px;
+        margin: 40px auto;
+        padding: 20px;
+        background: #f5f5f5;
+      }
+
+      .card {
+        background: white;
+        padding: 24px;
+        border-radius: 12px;
+        margin-bottom: 15px;
+      }
+
+      button,
+      select {
+        width: 100%;
+        padding: 14px;
+        margin-top: 12px;
+        font-size: 16px;
+      }
+
+      button {
+        background: #176b48;
+        color: white;
+        border: none;
+        border-radius: 8px;
+      }
+
+      button:disabled {
+        opacity: 0.5;
+      }
+
+      #level {
+        font-size: 40px;
+        font-weight: bold;
+        text-align: center;
+      }
+    </style>
+  </head>
+
+  <body>
+    <h1>Dublin Soundscape</h1>
+    <p>CS7NS4 — Sensor Data Collection</p>
+
+    <div class="card">
+      <label for="environment">Recording environment:</label>
+
+      <select id="environment">
+        <option value="quiet_indoor">Quiet Indoor</option>
+        <option value="indoor_activity">Indoor Activity</option>
+        <option value="residential_street">Residential Street</option>
+        <option value="busy_road">Busy Road</option>
+      </select>
+
+      <p>Relative sound level (RMS)</p>
+      <div id="level">0.000000</div>
+
+      <p>Readings: <span id="count">0</span> / 100</p>
+      <p id="status">Ready to record</p>
+
+      <button id="start">Start Recording</button>
+      <button id="stop" disabled>Stop Recording</button>
+      <button id="export" disabled>Export CSV</button>
+    </div>
+
+    <script>
+      const TARGET = 100;
+      const INTERVAL = 500;
+
+      let stream = null;
+      let audioContext = null;
+      let analyser = null;
+      let timer = null;
+
+      let readings = [];
+      let sessionId = "";
+      let startTime = 0;
+
+      const startButton = document.getElementById("start");
+      const stopButton = document.getElementById("stop");
+      const exportButton = document.getElementById("export");
+
+      const statusText = document.getElementById("status");
+      const levelText = document.getElementById("level");
+      const countText = document.getElementById("count");
+
+      async function startRecording() {
+        try {
+          startButton.disabled = true;
+          exportButton.disabled = true;
+
+          statusText.textContent = "Requesting microphone permission...";
+
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              echoCancellation: false,
+              noiseSuppression: false,
+              autoGainControl: false,
+            },
+            video: false,
+          });
+
+          audioContext = new AudioContext();
+          await audioContext.resume();
+
+          const source = audioContext.createMediaStreamSource(stream);
+
+          analyser = audioContext.createAnalyser();
+          analyser.fftSize = 2048;
+
+          source.connect(analyser);
+
+          readings = [];
+          sessionId = crypto.randomUUID();
+          startTime = performance.now();
+
+          const environment = document.getElementById("environment").value;
+
+          const buffer = new Float32Array(analyser.fftSize);
+
+          stopButton.disabled = false;
+          countText.textContent = "0";
+          statusText.textContent = "Recording...";
+
+          timer = setInterval(() => {
+            analyser.getFloatTimeDomainData(buffer);
+
+            let sum = 0;
+
+            for (let i = 0; i < buffer.length; i++) {
+              sum += buffer[i] * buffer[i];
+            }
+
+            const rms = Math.sqrt(sum / buffer.length);
+
+            const elapsed = performance.now() - startTime;
+
+            if (!Number.isFinite(rms)) return;
+
+            readings.push({
+              timestamp: new Date().toISOString(),
+              session_id: sessionId,
+              elapsed_ms: Math.round(elapsed),
+              environment: environment,
+              sound_level_rms: rms,
+            });
+
+            levelText.textContent = rms.toFixed(6);
+            countText.textContent = readings.length;
+
+            if (readings.length >= TARGET) {
+              stopRecording();
+            }
+          }, INTERVAL);
+        } catch (error) {
+          statusText.textContent = "Error: " + error.message;
+          await stopRecording();
+        }
+      }
+
+      async function stopRecording() {
+        clearInterval(timer);
+        timer = null;
+
+        if (stream) {
+          stream.getTracks().forEach((track) => track.stop());
+          stream = null;
+        }
+
+        if (audioContext) {
+          await audioContext.close();
+          audioContext = null;
+        }
+
+        startButton.disabled = false;
+        stopButton.disabled = true;
+        exportButton.disabled = readings.length === 0;
+
+        statusText.textContent =
+          "Stopped. Collected " + readings.length + " readings.";
+      }
+
+      function exportCSV() {
+        if (readings.length === 0) return;
+
+        const header = [
+          "timestamp",
+          "session_id",
+          "elapsed_ms",
+          "environment",
+          "sound_level_rms",
+        ];
+
+        const rows = readings.map((r) => [
+          r.timestamp,
+          r.session_id,
+          r.elapsed_ms,
+          r.environment,
+          r.sound_level_rms.toFixed(6),
+        ]);
+
+        const csv = [
+          header.join(","),
+          ...rows.map((row) => row.join(",")),
+        ].join("\r\n");
+
+        const blob = new Blob([csv], {
+          type: "text/csv;charset=utf-8;",
+        });
+
+        const url = URL.createObjectURL(blob);
+
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = "dublin-soundscape.csv";
+
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }
+
+      startButton.addEventListener("click", startRecording);
+      stopButton.addEventListener("click", stopRecording);
+      exportButton.addEventListener("click", exportCSV);
+    </script>
+  </body>
+</html>
